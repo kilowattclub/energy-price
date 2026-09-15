@@ -1,6 +1,12 @@
 #![doc = include_str!("../README.md")]
 //! Electricity prices in pence/kWh, with optional additional Axle export rewards.
 pub mod axle;
+pub mod dispatch;
+pub use dispatch::ProviderConfig;
+pub use events::{
+    AxleDirection as DispatchDirection, AxleEvent as DispatchEvent,
+    AxleForecast as DispatchForecast,
+};
 mod config;
 mod events;
 pub mod export;
