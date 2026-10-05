@@ -7,7 +7,6 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
-use crate::config::AxleConfig;
 use crate::{AxleDirection, AxleEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +59,7 @@ impl AxleRewardTracker {
     }
 
     /// Only call on successful feed reads. A timeout is not a cancellation.
-    pub fn confirm(&mut self, event: Option<&AxleEvent>, now: DateTime<Utc>, cfg: &AxleConfig) {
+    pub fn confirm(&mut self, event: Option<&AxleEvent>, now: DateTime<Utc>) {
         let id = event.map(|e| {
             format!(
                 "axle-{}-{}",
@@ -103,10 +102,7 @@ impl AxleRewardTracker {
                     end: event.end_time,
                     direction: event.direction,
                     local_date: event.start_time.with_timezone(&self.tz).date_naive(),
-                    reward_p_per_kwh: match event.direction {
-                        AxleDirection::Export => cfg.export_reward_p_per_kwh,
-                        AxleDirection::Import => cfg.import_reward_p_per_kwh,
-                    },
+                    reward_p_per_kwh: crate::axle::reward_p_per_kwh(event.direction),
                     net_grid_kwh: 0.0,
                     coverage_seconds: 0.0,
                     eligible_from: now.max(event.start_time),
@@ -247,7 +243,7 @@ mod tests {
     #[test]
     fn whole_event_net_grid_contribution_offsets_exports_with_imports() {
         let mut t = tracker("net");
-        t.confirm(Some(&event()), at(-60), &AxleConfig::default());
+        t.confirm(Some(&event()), at(-60));
         for second in (0..=1800).step_by(30) {
             sample(&mut t, second, -4.0);
         }
@@ -266,7 +262,7 @@ mod tests {
             end_time: at(60),
             ..event()
         };
-        t.confirm(Some(&e), at(-60), &AxleConfig::default());
+        t.confirm(Some(&e), at(-60));
         sample(&mut t, -30, 0.0);
         sample(&mut t, 30, -6.0);
         sample(&mut t, 90, 0.0);
@@ -279,14 +275,14 @@ mod tests {
     #[test]
     fn cancellation_and_reinstatement_do_not_credit_the_gap() {
         let mut t = tracker("cancel");
-        t.confirm(Some(&event()), at(-60), &AxleConfig::default());
+        t.confirm(Some(&event()), at(-60));
         sample(&mut t, 0, -6.0);
         sample(&mut t, 30, -6.0);
-        t.confirm(None, at(45), &AxleConfig::default());
+        t.confirm(None, at(45));
         sample(&mut t, 60, -6.0);
         sample(&mut t, 90, -6.0);
         near(reward(&t), 6.0 * 45.0 / 3600.0);
-        t.confirm(Some(&event()), at(105), &AxleConfig::default());
+        t.confirm(Some(&event()), at(105));
         sample(&mut t, 120, -6.0);
         near(reward(&t), 0.1);
         near(t.ledger.events[0].coverage_seconds, 60.0);
@@ -296,14 +292,14 @@ mod tests {
     fn late_discovery_and_rescheduling_do_not_retroactively_claim_energy() {
         let mut t = tracker("late");
         sample(&mut t, 0, -6.0);
-        t.confirm(Some(&event()), at(15), &AxleConfig::default());
+        t.confirm(Some(&event()), at(15));
         sample(&mut t, 30, -6.0);
         near(reward(&t), 0.025);
         let moved = AxleEvent {
             start_time: at(60),
             ..event()
         };
-        t.confirm(Some(&moved), at(45), &AxleConfig::default());
+        t.confirm(Some(&moved), at(45));
         sample(&mut t, 60, -6.0);
         sample(&mut t, 90, -6.0);
         let rows = snapshot(&t.path, at(120));
@@ -314,7 +310,7 @@ mod tests {
     #[test]
     fn gaps_missing_invalid_and_duplicate_readings_cannot_manufacture_energy() {
         let mut t = tracker("gaps");
-        t.confirm(Some(&event()), at(-60), &AxleConfig::default());
+        t.confirm(Some(&event()), at(-60));
         sample(&mut t, 0, -6.0);
         sample(&mut t, 30, -6.0);
         sample(&mut t, 30, -600.0);
@@ -333,7 +329,7 @@ mod tests {
     #[test]
     fn restart_keeps_earnings_without_bridging_downtime_or_replaying_old_samples() {
         let mut t = tracker("restart");
-        t.confirm(Some(&event()), at(-60), &AxleConfig::default());
+        t.confirm(Some(&event()), at(-60));
         sample(&mut t, 0, -6.0);
         sample(&mut t, 30, -6.0);
         let mut restored = AxleRewardTracker::new(t.path.clone(), t.tz, 90.0).unwrap();
@@ -346,27 +342,20 @@ mod tests {
     }
 
     #[test]
-    fn signed_import_rewards_and_zero_floor_use_configured_rates() {
+    fn import_events_are_recorded_without_a_reward() {
         let mut t = tracker("import");
-        let cfg = AxleConfig {
-            import_reward_p_per_kwh: 50.0,
-            ..AxleConfig::default()
-        };
         t.confirm(
             Some(&AxleEvent {
                 direction: AxleDirection::Import,
                 ..event()
             }),
             at(-60),
-            &cfg,
         );
-        sample(&mut t, 0, -6.0);
-        sample(&mut t, 30, -6.0);
-        near(reward(&t), 0.0);
-        for second in (60..=120).step_by(30) {
+        for second in (0..=120).step_by(30) {
             sample(&mut t, second, 6.0);
         }
-        near(reward(&t), 0.025);
+        assert_eq!(t.ledger.events[0].reward_p_per_kwh, 0.0);
+        near(reward(&t), 0.0);
     }
 
     #[test]
@@ -377,7 +366,7 @@ mod tests {
             end_time: at(21630),
             ..event()
         };
-        t.confirm(Some(&e), at(21500), &AxleConfig::default());
+        t.confirm(Some(&e), at(21500));
         sample(&mut t, 21570, -6.0);
         sample(&mut t, 21600, -6.0);
         sample(&mut t, 21630, -6.0);
@@ -397,7 +386,7 @@ mod tests {
     #[test]
     fn retrospective_end_correction_withdraws_unreconstructable_estimate() {
         let mut t = tracker("correction");
-        t.confirm(Some(&event()), at(-60), &AxleConfig::default());
+        t.confirm(Some(&event()), at(-60));
         sample(&mut t, 0, -6.0);
         sample(&mut t, 30, -6.0);
         sample(&mut t, 60, -6.0);
@@ -407,7 +396,6 @@ mod tests {
                 ..event()
             }),
             at(60),
-            &AxleConfig::default(),
         );
         near(reward(&t), 0.0);
         near(t.ledger.events[0].coverage_seconds, 0.0);

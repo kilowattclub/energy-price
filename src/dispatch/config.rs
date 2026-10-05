@@ -13,21 +13,10 @@ pub struct ProviderConfig {
 
 impl ProviderConfig {
     /// Consume only provider-owned sections, leaving the host to validate its own fields.
-    /// Retains compatibility with existing `[axle]` configurations.
     pub fn extract(table: &mut toml::Table) -> Result<Self, String> {
         let axle = table
             .remove("axle")
-            .map(|mut value| {
-                // Events are always self-dispatched; older configurations still carry this key.
-                if let Some(table) = value.as_table_mut() {
-                    if table.remove("self_dispatch").is_some() {
-                        log::warn!(
-                            "ignoring axle.self_dispatch: Axle events are always self-dispatched"
-                        );
-                    }
-                }
-                value.try_into().map_err(|e: toml::de::Error| e.to_string())
-            })
+            .map(|value| value.try_into().map_err(|e: toml::de::Error| e.to_string()))
             .transpose()?
             .unwrap_or_default();
         Ok(Self { axle })
@@ -44,7 +33,6 @@ impl ProviderConfig {
         event: Option<&EventInfo>,
     ) -> serde_json::Map<String, serde_json::Value> {
         serde_json::json!({
-            "axle_self_dispatch": self.axle.enabled,
             "axle_event": event.map(|e| serde_json::json!({"start":e.start, "end":e.end, "direction":e.direction})),
             "axle_rewards": rewards::snapshot(&directory.join("axle-rewards.json"), now),
         }).as_object().expect("object").clone()
@@ -68,9 +56,10 @@ mod tests {
         for body in [
             "enabled=true",
             "unknown=true",
-            "export_reward_p_per_kwh=-1",
-            "import_reward_p_per_kwh=nan",
-            "enabled=true\napi_key='key'\napi_url='http://api.axle.energy'",
+            "self_dispatch=true",
+            "api_url='https://api.axle.energy'",
+            "export_reward_p_per_kwh=100",
+            "import_reward_p_per_kwh=0",
         ] {
             let mut table = toml::from_str(&format!("[axle]\n{body}")).unwrap();
             assert!(
@@ -80,44 +69,15 @@ mod tests {
                 "{body}"
             );
         }
-        for field in ["import_reward_p_per_kwh", "export_reward_p_per_kwh"] {
-            for value in ["-1", "nan", "inf"] {
-                let mut table = toml::from_str(&format!("[axle]\n{field}={value}")).unwrap();
-                assert!(ProviderConfig::extract(&mut table)
-                    .unwrap()
-                    .validate()
-                    .is_err());
-            }
-        }
-        let mut table = toml::from_str("[axle]\nenabled=true\napi_key='key'\napi_url='http://127.0.0.1:3000'\nimport_reward_p_per_kwh=25").unwrap();
-        ProviderConfig::extract(&mut table)
-            .unwrap()
-            .validate()
-            .unwrap();
     }
     #[test]
-    fn legacy_self_dispatch_settings_are_ignored() {
-        for value in ["true", "false"] {
-            let mut table = toml::from_str(&format!("[axle]\nself_dispatch={value}")).unwrap();
-            ProviderConfig::extract(&mut table).unwrap();
-        }
-    }
-    #[test]
-    fn legacy_snapshot_flag_reports_self_dispatch_whenever_axle_is_enabled() {
+    fn snapshot_reports_the_active_event_and_reward_ledger() {
         let now = Utc.with_ymd_and_hms(2026, 9, 10, 22, 0, 0).unwrap();
         let directory =
             std::env::temp_dir().join(format!("provider-snapshot-{}", std::process::id()));
-        for enabled in [false, true] {
-            let cfg = ProviderConfig {
-                axle: AxleConfig {
-                    enabled,
-                    ..Default::default()
-                },
-            };
-            let fields = cfg.snapshot_fields(&directory, now, None);
-            assert_eq!(fields["axle_self_dispatch"], enabled);
-            assert!(fields["axle_event"].is_null());
-            assert_eq!(fields["axle_rewards"], serde_json::json!([]));
-        }
+        let fields = ProviderConfig::default().snapshot_fields(&directory, now, None);
+        assert_eq!(fields.len(), 2);
+        assert!(fields["axle_event"].is_null());
+        assert_eq!(fields["axle_rewards"], serde_json::json!([]));
     }
 }

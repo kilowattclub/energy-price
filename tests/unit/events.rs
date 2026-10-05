@@ -86,9 +86,7 @@ fn every_call_reaches_the_provider() {
     let client = AxleEvents {
         cfg: AxleConfig {
             enabled: true,
-            api_url: "https://api.axle.energy".into(),
             api_key: "member-key".into(),
-            ..AxleConfig::default()
         },
         source: Box::new(CountingSource(Arc::clone(&count))),
     };

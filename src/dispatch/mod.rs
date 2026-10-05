@@ -4,7 +4,7 @@ mod rewards;
 mod self_dispatch;
 mod store;
 
-use crate::{axle::AxleEvents, AxleConfig, DispatchDirection, DispatchEvent, DispatchForecast};
+use crate::{axle::AxleEvents, DispatchDirection, DispatchEvent, DispatchForecast};
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 pub use config::ProviderConfig;
@@ -147,7 +147,6 @@ pub trait DispatchProvider {
 }
 
 pub struct DispatchService {
-    cfg: AxleConfig,
     feed: AxleEvents,
     last: Option<DispatchEvent>,
     local: Option<AxleSelfDispatch>,
@@ -189,7 +188,6 @@ impl DispatchService {
         .map_err(|error| log::warn!("reward accounting unavailable: {error}"))
         .ok();
         Ok(Self {
-            cfg: cfg.axle.clone(),
             feed,
             last: None,
             local,
@@ -203,7 +201,7 @@ impl DispatchProvider for DispatchService {
         match self.feed.get_event() {
             Ok(event) => {
                 if let Some(rewards) = &mut self.rewards {
-                    rewards.confirm(event.as_ref(), now, &self.cfg);
+                    rewards.confirm(event.as_ref(), now);
                 }
                 if let Some(local) = &mut self.local {
                     local.observe(event.as_ref(), now)?;
@@ -262,10 +260,7 @@ impl DispatchProvider for DispatchService {
             .as_ref()
             .map(|event| DispatchForecast {
                 event: event.clone(),
-                reward_p_per_kwh: match event.direction {
-                    DispatchDirection::Import => self.cfg.import_reward_p_per_kwh,
-                    DispatchDirection::Export => self.cfg.export_reward_p_per_kwh,
-                },
+                reward_p_per_kwh: crate::axle::reward_p_per_kwh(event.direction),
             })
             .into_iter()
             .collect()
@@ -315,6 +310,7 @@ impl DispatchProvider for DispatchService {
 mod tests {
     use super::*;
     use crate::axle::{AxleError, AxleSource};
+    use crate::AxleConfig;
     use chrono::TimeZone;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -350,7 +346,6 @@ mod tests {
                 axle: AxleConfig {
                     enabled: true,
                     api_key: "test-key".into(),
-                    ..Default::default()
                 },
             };
             let feed = Feed(Arc::new(Mutex::new(Ok(None))));
