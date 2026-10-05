@@ -1,18 +1,22 @@
 # energy-price
 
 Electricity import and export price slots in pence/kWh. Includes Octopus tariff
-clients, a read-only Axle event client and provider-owned dispatch policy. No inverter, optimiser, Brain settings,
-or private dependencies are required.
+clients, a read-only Axle event client and provider-owned dispatch policy. No
+inverter, optimiser, Brain settings or private dependencies are required.
 
 ```rust,no_run
 use chrono::{Duration, Utc};
-use energy_price::{get_import, get_export, MarketConfig, OctopusImports, OctopusExports};
-let settings = MarketConfig::default(); // set your import and export product/tariff
-let start = Utc::now();
-let horizon = start..start + Duration::days(2);
-let imports = get_import(&OctopusImports::new(settings.clone()), horizon.clone())?;
-let exports = get_export(&OctopusExports::new(settings), horizon, None)?;
-# Ok::<(), Box<dyn std::error::Error>>(())
+use energy_price::{get_export, get_import, MarketConfig, OctopusExports, OctopusImports};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let settings = MarketConfig::default(); // set your import and export product/tariff
+    let start = Utc::now();
+    let horizon = start..start + Duration::days(2);
+    let imports = get_import(&OctopusImports::new(settings.clone()), horizon.clone())?;
+    let exports = get_export(&OctopusExports::new(settings), horizon, None)?;
+    println!("{} import and {} export slots", imports.len(), exports.len());
+    Ok(())
+}
 ```
 
 Pass `Some(&AxleForecast)` to `get_export` to include an expected export-event
