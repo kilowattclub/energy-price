@@ -20,5 +20,4 @@ pub struct AxleEvent {
 pub struct AxleForecast {
     pub event: AxleEvent,
     pub reward_p_per_kwh: f64,
-    pub self_dispatch: bool,
 }

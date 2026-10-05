@@ -13,7 +13,6 @@ pub struct ProviderConfig {
 
 impl ProviderConfig {
     /// Consume only provider-owned sections, leaving the host to validate its own fields.
-    /// Retains compatibility with existing `[axle]` configurations.
     pub fn extract(table: &mut toml::Table) -> Result<Self, String> {
         let axle = table
             .remove("axle")
@@ -34,7 +33,6 @@ impl ProviderConfig {
         event: Option<&EventInfo>,
     ) -> serde_json::Map<String, serde_json::Value> {
         serde_json::json!({
-            "axle_self_dispatch": self.axle.enabled && self.axle.self_dispatch,
             "axle_event": event.map(|e| serde_json::json!({"start":e.start, "end":e.end, "direction":e.direction})),
             "axle_rewards": rewards::snapshot(&directory.join("axle-rewards.json"), now),
         }).as_object().expect("object").clone()
@@ -58,9 +56,10 @@ mod tests {
         for body in [
             "enabled=true",
             "unknown=true",
-            "export_reward_p_per_kwh=-1",
-            "import_reward_p_per_kwh=nan",
-            "enabled=true\napi_key='key'\napi_url='http://api.axle.energy'",
+            "self_dispatch=true",
+            "api_url='https://api.axle.energy'",
+            "export_reward_p_per_kwh=100",
+            "import_reward_p_per_kwh=0",
         ] {
             let mut table = toml::from_str(&format!("[axle]\n{body}")).unwrap();
             assert!(
@@ -70,42 +69,15 @@ mod tests {
                 "{body}"
             );
         }
-        for field in ["import_reward_p_per_kwh", "export_reward_p_per_kwh"] {
-            for value in ["-1", "nan", "inf"] {
-                let mut table = toml::from_str(&format!("[axle]\n{field}={value}")).unwrap();
-                assert!(ProviderConfig::extract(&mut table)
-                    .unwrap()
-                    .validate()
-                    .is_err());
-            }
-        }
-        let mut table = toml::from_str("[axle]\nenabled=true\napi_key='key'\napi_url='http://127.0.0.1:3000'\nimport_reward_p_per_kwh=25").unwrap();
-        ProviderConfig::extract(&mut table)
-            .unwrap()
-            .validate()
-            .unwrap();
     }
     #[test]
-    fn legacy_snapshot_flags_require_enabled_self_dispatch() {
+    fn snapshot_reports_the_active_event_and_reward_ledger() {
         let now = Utc.with_ymd_and_hms(2026, 9, 10, 22, 0, 0).unwrap();
         let directory =
             std::env::temp_dir().join(format!("provider-snapshot-{}", std::process::id()));
-        for (enabled, self_dispatch, expected) in [
-            (false, true, false),
-            (true, false, false),
-            (true, true, true),
-        ] {
-            let cfg = ProviderConfig {
-                axle: AxleConfig {
-                    enabled,
-                    self_dispatch,
-                    ..Default::default()
-                },
-            };
-            let fields = cfg.snapshot_fields(&directory, now, None);
-            assert_eq!(fields["axle_self_dispatch"], expected);
-            assert!(fields["axle_event"].is_null());
-            assert_eq!(fields["axle_rewards"], serde_json::json!([]));
-        }
+        let fields = ProviderConfig::default().snapshot_fields(&directory, now, None);
+        assert_eq!(fields.len(), 2);
+        assert!(fields["axle_event"].is_null());
+        assert_eq!(fields["axle_rewards"], serde_json::json!([]));
     }
 }

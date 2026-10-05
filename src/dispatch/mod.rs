@@ -1,21 +1,17 @@
 //! Provider-owned event policy, persistence and rewards. The host owns hardware and clocks.
 mod config;
-mod handover;
 mod rewards;
 mod self_dispatch;
 mod store;
-mod time;
 
-use crate::{axle::AxleEvents, AxleConfig, DispatchDirection, DispatchEvent, DispatchForecast};
+use crate::{axle::AxleEvents, DispatchDirection, DispatchEvent, DispatchForecast};
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 pub use config::ProviderConfig;
-use handover::AxleHandover;
 use rewards::AxleRewardTracker;
 use self_dispatch::AxleSelfDispatch;
 use std::path::Path;
 use store::save_json;
-use time::{handover_at, resume_at};
 
 /// An observation supplied by the host. Grid and battery power are positive on import/charge.
 #[derive(Clone, Copy, Debug)]
@@ -104,10 +100,6 @@ pub struct Update {
 }
 #[derive(Debug, Clone, Copy)]
 pub enum Control {
-    /// The feed has not yet established whether another party owns control.
-    Unavailable,
-    /// Suppress hardware writes except for the single permitted passive handover.
-    External { release: bool, until: DateTime<Utc> },
     /// A provider request; the host still applies the action and reports write outcomes.
     Override {
         action: Action,
@@ -155,11 +147,8 @@ pub trait DispatchProvider {
 }
 
 pub struct DispatchService {
-    cfg: AxleConfig,
     feed: AxleEvents,
     last: Option<DispatchEvent>,
-    ready: bool,
-    handover: AxleHandover,
     local: Option<AxleSelfDispatch>,
     rewards: Option<AxleRewardTracker>,
 }
@@ -186,11 +175,11 @@ impl DispatchService {
         feed: AxleEvents,
     ) -> Result<Self, String> {
         cfg.validate()?;
-        let handover = AxleHandover::load(directory.join("axle-handover.json"))?;
-        let local = (cfg.axle.enabled && cfg.axle.self_dispatch)
+        let local = cfg
+            .axle
+            .enabled
             .then(|| AxleSelfDispatch::load(directory.join("axle-self-dispatch.json")))
             .transpose()?;
-        let ready = !cfg.axle.enabled || local.is_some();
         let rewards = AxleRewardTracker::new(
             directory.join("axle-rewards.json"),
             timezone,
@@ -199,11 +188,8 @@ impl DispatchService {
         .map_err(|error| log::warn!("reward accounting unavailable: {error}"))
         .ok();
         Ok(Self {
-            cfg: cfg.axle.clone(),
             feed,
             last: None,
-            ready,
-            handover,
             local,
             rewards,
         })
@@ -212,17 +198,15 @@ impl DispatchService {
 impl DispatchProvider for DispatchService {
     fn poll(&mut self, now: DateTime<Utc>) -> Result<Update, String> {
         let previous = self.last.clone();
-        let was_ready = self.ready;
         match self.feed.get_event() {
             Ok(event) => {
                 if let Some(rewards) = &mut self.rewards {
-                    rewards.confirm(event.as_ref(), now, &self.cfg);
+                    rewards.confirm(event.as_ref(), now);
                 }
                 if let Some(local) = &mut self.local {
                     local.observe(event.as_ref(), now)?;
                 }
                 self.last = event;
-                self.ready = true;
             }
             Err(error) => {
                 log::warn!("{error}");
@@ -234,13 +218,10 @@ impl DispatchProvider for DispatchService {
                 }
             }
         }
-        if self.local.is_none() {
-            self.handover.observe(self.last.as_ref(), now)?;
-        }
         let changed = self.last != previous;
         Ok(Update {
             changed,
-            replan: (changed && self.local.is_some()) || (!was_ready && self.ready),
+            replan: changed && self.local.is_some(),
         })
     }
     fn control(
@@ -249,17 +230,6 @@ impl DispatchProvider for DispatchService {
         now: DateTime<Utc>,
         reading: Option<&Reading>,
     ) -> Result<Control, String> {
-        if !self.ready {
-            return Ok(Control::Unavailable);
-        }
-        if self.local.is_none() {
-            if let Some(release) = self.handover.prepare(now)? {
-                return Ok(Control::External {
-                    release,
-                    until: next_half_hour(now),
-                });
-            }
-        }
         if !limits.valid() {
             return Err("invalid dispatch battery limits".into());
         }
@@ -278,14 +248,11 @@ impl DispatchProvider for DispatchService {
                 });
             }
         }
-        let until = if self.local.is_some() {
-            self.last
-                .as_ref()
-                .filter(|e| e.start_time > now)
-                .map(|e| e.start_time)
-        } else {
-            self.handover.next_handover(now)
-        };
+        let until = self
+            .last
+            .as_ref()
+            .filter(|e| e.start_time > now)
+            .map(|e| e.start_time);
         Ok(Control::Tariff { until, replan })
     }
     fn forecasts(&self) -> Vec<DispatchForecast> {
@@ -293,11 +260,7 @@ impl DispatchProvider for DispatchService {
             .as_ref()
             .map(|event| DispatchForecast {
                 event: event.clone(),
-                self_dispatch: self.cfg.self_dispatch,
-                reward_p_per_kwh: match event.direction {
-                    DispatchDirection::Import => self.cfg.import_reward_p_per_kwh,
-                    DispatchDirection::Export => self.cfg.export_reward_p_per_kwh,
-                },
+                reward_p_per_kwh: crate::axle::reward_p_per_kwh(event.direction),
             })
             .into_iter()
             .collect()
@@ -331,9 +294,6 @@ impl DispatchProvider for DispatchService {
             false
         }
     }
-    fn permits_shutdown(&self, now: DateTime<Utc>) -> bool {
-        self.local.is_some() || (self.ready && !self.handover.protected(now))
-    }
     fn observe(&mut self, now: DateTime<Utc>, reading: Option<&Reading>) {
         if let Some(rewards) = &mut self.rewards {
             rewards.observe(now, reading);
@@ -345,14 +305,12 @@ impl DispatchProvider for DispatchService {
         }
     }
 }
-fn next_half_hour(now: DateTime<Utc>) -> DateTime<Utc> {
-    DateTime::from_timestamp((now.timestamp().div_euclid(1800) + 1) * 1800, 0).expect("half-hour")
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::axle::{AxleError, AxleSource};
+    use crate::AxleConfig;
     use chrono::TimeZone;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -377,7 +335,7 @@ mod tests {
         service: DispatchService,
     }
     impl Fixture {
-        fn new(self_dispatch: bool) -> Self {
+        fn new() -> Self {
             static ID: AtomicUsize = AtomicUsize::new(0);
             let directory = std::env::temp_dir().join(format!(
                 "price-dispatch-{}-{}",
@@ -388,8 +346,6 @@ mod tests {
                 axle: AxleConfig {
                     enabled: true,
                     api_key: "test-key".into(),
-                    self_dispatch,
-                    ..Default::default()
                 },
             };
             let feed = Feed(Arc::new(Mutex::new(Ok(None))));
@@ -467,55 +423,26 @@ mod tests {
     }
 
     #[test]
-    fn unknown_ownership_and_late_event_discovery_never_allow_a_reset() {
-        let mut f = Fixture::new(false);
+    fn an_offline_feed_or_late_discovery_never_hands_control_to_another_party() {
+        let mut f = Fixture::new();
         *f.feed.0.lock().unwrap() = Err("offline".into());
         f.service.poll(at(0)).unwrap();
-        assert!(matches!(f.control(at(0)), Control::Unavailable));
-        assert!(!f.service.permits_shutdown(at(0)));
-        let event = DispatchEvent {
-            start_time: at(0) + Duration::seconds(1),
-            end_time: at(10),
-            direction: DispatchDirection::Export,
-        };
-        assert!(f.publish(Some(event.clone()), event.start_time).replan);
-        assert!(matches!(
-            f.control(event.start_time),
-            Control::External { release: false, .. }
-        ));
-        assert!(!f.service.permits_shutdown(event.start_time));
-        f.publish(None, at(11));
-        assert!(matches!(
-            f.control(at(11)),
-            Control::External { release: false, .. }
-        ));
-        assert!(matches!(f.control(at(30)), Control::Tariff { .. }));
-        assert!(f.service.permits_shutdown(at(30)));
-    }
-    #[test]
-    fn one_handover_and_its_protection_survive_restart_and_an_empty_feed() {
-        let mut f = Fixture::new(false);
-        f.publish(Some(event()), at(-1));
-        assert!(matches!(f.control(at(-1)), Control::Tariff { until: Some(t), .. } if t == at(0)));
         assert!(matches!(
             f.control(at(0)),
-            Control::External { release: true, .. }
+            Control::Tariff { until: None, .. }
         ));
-        f.reload();
-        f.publish(None, at(1));
-        assert!(matches!(
-            f.control(at(1)),
-            Control::External { release: false, .. }
-        ));
-        assert!(matches!(
-            f.control(at(30)),
-            Control::External { release: false, .. }
-        ));
-        assert!(matches!(f.control(at(60)), Control::Tariff { .. }));
+        assert!(f.service.permits_shutdown(at(0)));
+        let late = at(17) + Duration::seconds(1);
+        assert!(f.publish(Some(event()), late).replan);
+        let Control::Override { action, .. } = f.control(late) else {
+            panic!("expected local dispatch")
+        };
+        assert_eq!(action.mode, DispatchMode::Exporting);
+        assert!(f.service.permits_shutdown(late));
     }
     #[test]
     fn local_dispatch_preserves_deadlines_feed_grace_and_cancellation() {
-        let mut f = Fixture::new(true);
+        let mut f = Fixture::new();
         assert!(f.publish(Some(event()), at(16)).replan);
         assert!(matches!(f.control(at(16)), Control::Tariff { until: Some(t), .. } if t == at(17)));
         assert_eq!(f.service.next_boundary(at(16)), Some(at(17)));
@@ -553,12 +480,11 @@ mod tests {
     }
     #[test]
     fn provider_forecasts_metadata_and_legacy_reward_snapshots_stay_consistent() {
-        let mut f = Fixture::new(false);
+        let mut f = Fixture::new();
         f.publish(Some(event()), at(16));
         let forecasts = f.service.forecasts();
         assert_eq!(forecasts[0].event, event());
         assert_eq!(forecasts[0].reward_p_per_kwh, 100.0);
-        assert!(!forecasts[0].self_dispatch);
         for time in [at(17), at(17) + Duration::seconds(30)] {
             f.service.observe(time, Some(&reading(time)));
         }

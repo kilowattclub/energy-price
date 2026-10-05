@@ -79,7 +79,6 @@ fn export_reward_is_optional_additional_and_limited_to_the_event_overlap() {
             direction: AxleDirection::Export,
         },
         reward_p_per_kwh: 100.0,
-        self_dispatch: true,
     };
     let enriched = get_export(&client(), horizon.clone(), Some(&axle)).unwrap();
     assert_eq!(

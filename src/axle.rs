@@ -19,6 +19,18 @@ pub enum AxleError {
 
 pub use crate::events::{AxleDirection, AxleEvent, AxleForecast};
 
+/// Axle's Home Assistant event endpoint for the member's VPP account.
+const EVENT_URL: &str = "https://api.axle.energy/vpp/home-assistant/event";
+
+/// Axle's published Self-Dispatch rate, additional to the export tariff. The
+/// event API supplies only the window and direction; import events are unpaid.
+pub fn reward_p_per_kwh(direction: AxleDirection) -> f64 {
+    match direction {
+        AxleDirection::Export => 100.0,
+        AxleDirection::Import => 0.0,
+    }
+}
+
 pub trait AxleSource: Send + Sync {
     fn fetch(&self, url: &str, api_key: &str) -> Result<Option<AxleEvent>, AxleError>;
 }
@@ -111,11 +123,7 @@ impl AxleEvents {
         if !self.cfg.enabled {
             return Ok(None);
         }
-        let url = format!(
-            "{}/vpp/home-assistant/event",
-            self.cfg.api_url.trim_end_matches('/')
-        );
-        self.source.fetch(&url, &self.cfg.api_key)
+        self.source.fetch(EVENT_URL, &self.cfg.api_key)
     }
 }
 
