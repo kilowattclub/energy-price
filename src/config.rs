@@ -37,12 +37,11 @@ impl MarketConfig {
 fn err<T>(message: impl Into<String>) -> Result<T, String> {
     Err(message.into())
 }
-/// Direct, read-only access to the member's Axle VPP event feed.
+/// Direct, read-only access to the member's Axle VPP event feed. Events are
+/// always self-dispatched: select Self-Dispatch Mode in the Axle account.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AxleConfig {
-    /// Enable only after selecting Self-Dispatch Mode in the Axle account.
-    pub self_dispatch: bool,
     /// Expected reward, additional to the export tariff; not supplied by the API.
     pub export_reward_p_per_kwh: f64,
     /// Expected reward per net imported kWh (planning and measured estimates); zero unless explicitly configured.
@@ -55,7 +54,6 @@ pub struct AxleConfig {
 impl Default for AxleConfig {
     fn default() -> Self {
         Self {
-            self_dispatch: false,
             export_reward_p_per_kwh: 100.0,
             import_reward_p_per_kwh: 0.0,
             enabled: false,
