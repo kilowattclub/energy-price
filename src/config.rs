@@ -9,6 +9,11 @@ pub struct MarketConfig {
     /// configured explicitly.
     pub export_product: String,
     pub export_tariff: String,
+    /// Optional flat export price in p/kWh for every half-hour, replacing the
+    /// published rates of the configured export tariff (offline use or a known
+    /// flat rate during API outages). Leave unset to follow Octopus, including
+    /// future rate changes.
+    pub export_fixed_p: Option<f64>,
     /// Payment method used for the regional Flexible Octopus comparison.
     pub standard_payment_method: String,
     /// No-battery comparison tariff in p/kWh, used only when Octopus and the
@@ -22,6 +27,7 @@ impl Default for MarketConfig {
             import_tariff: "E-1R-AGILE-24-10-01-C".into(),
             export_product: String::new(),
             export_tariff: String::new(),
+            export_fixed_p: None,
             standard_payment_method: "DIRECT_DEBIT".into(),
             standard_tariff_p: 26.11,
         }
