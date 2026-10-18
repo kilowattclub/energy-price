@@ -28,6 +28,21 @@ assuming constant export power. Exact event-window planners should use the raw
 tariff and event separately to avoid counting rewards twice. These are estimates,
 not settled revenue.
 
+Export rates are expanded over the half-hours they cover. Agile Outgoing
+publishes one rate per half-hour; flat products such as Outgoing Octopus
+(`OUTGOING-VAR-24-10-26`) publish one rate per price, open-ended while current,
+so every half-hour in the window gets the flat price and rate changes are
+followed automatically. Optionally, `export_fixed_p` replaces the configured
+export tariff's published rates with one flat price, without API calls. Use it
+for offline runs or a known flat rate during API outages:
+
+```toml
+[market]
+export_product = "OUTGOING-VAR-24-10-26"
+export_tariff = "E-1R-OUTGOING-VAR-24-10-26-F"
+export_fixed_p = 12.0 # optional; omit to follow Octopus
+```
+
 Slots are timestamped in UTC and sorted. Unpublished slots remain absent; missing
 prices are never synthesized. Supplier calls have five-second timeouts; Axle calls
 have a 500 ms timeout. `with_source` supports other providers and offline tests.

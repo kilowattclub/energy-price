@@ -1,7 +1,8 @@
 //! Published Octopus export prices.
 use crate::MarketConfig;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 const API_BASE: &str = "https://api.octopus.energy/v1";
+const SLOT_SECONDS: i64 = 1800;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportPriceError {
@@ -62,23 +63,59 @@ impl ExportPriceSource for HttpExportPriceSource {
             .map_err(|error| ExportPriceError::Http(error.to_string()))?
             .into_json()
             .map_err(|error| ExportPriceError::Http(error.to_string()))?;
-        Ok(payload
-            .get("results")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|row| {
-                let start = DateTime::parse_from_rfc3339(row.get("valid_from")?.as_str()?)
-                    .ok()?
-                    .with_timezone(&Utc);
-                let price_p_per_kwh = row.get("value_inc_vat")?.as_f64()?;
-                price_p_per_kwh.is_finite().then_some(ExportPriceSlot {
+        Ok(rate_slots(&payload, from, to))
+    }
+}
+
+/// Expand each published rate over the half-hours it covers within `from..to`.
+///
+/// Agile Outgoing publishes one row per half-hour. Flat products such as
+/// Outgoing Octopus publish one row per rate, with `valid_to: null` while the
+/// rate is current, so a rate change inside the window yields both prices.
+fn rate_slots(
+    payload: &serde_json::Value,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Vec<ExportPriceSlot> {
+    let time = |row: &serde_json::Value, key| {
+        DateTime::parse_from_rfc3339(row.get(key)?.as_str()?)
+            .ok()
+            .map(|time| time.with_timezone(&Utc))
+    };
+    payload
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let valid_from = time(row, "valid_from")?;
+            let valid_to = match row.get("valid_to") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(_) => Some(time(row, "valid_to")?),
+            };
+            let price_p_per_kwh = row
+                .get("value_inc_vat")?
+                .as_f64()
+                .filter(|price| price.is_finite())?;
+            let end = valid_to.map_or(to, |valid_to| valid_to.min(to));
+            Some(
+                half_hours(valid_from.max(from), end).map(move |start| ExportPriceSlot {
                     start,
                     price_p_per_kwh,
-                })
-            })
-            .collect())
-    }
+                }),
+            )
+        })
+        .flatten()
+        .collect()
+}
+
+/// UTC half-hour starts within `from..to`, beginning at the first boundary at or after `from`.
+fn half_hours(from: DateTime<Utc>, to: DateTime<Utc>) -> impl Iterator<Item = DateTime<Utc>> {
+    let seconds = from.timestamp() + i64::from(from.timestamp_subsec_nanos() > 0);
+    let first =
+        DateTime::from_timestamp(seconds + (-seconds).rem_euclid(SLOT_SECONDS), 0).unwrap_or(to);
+    std::iter::successors(Some(first), |start| Some(*start + Duration::minutes(30)))
+        .take_while(move |start| *start < to)
 }
 
 pub struct OctopusExports {
@@ -109,12 +146,25 @@ impl OctopusExports {
                 "export product and tariff are not configured".into(),
             ));
         }
-        let mut slots = self.source.fetch(
-            &self.cfg.export_product,
-            &self.cfg.export_tariff,
-            start,
-            end,
-        )?;
+        let mut slots = match self.cfg.export_fixed_p {
+            Some(price) if !(price.is_finite() && price >= 0.0) => {
+                return Err(ExportPriceError::Unavailable(
+                    "export_fixed_p must be finite and non-negative".into(),
+                ));
+            }
+            Some(price_p_per_kwh) => half_hours(start, end)
+                .map(|start| ExportPriceSlot {
+                    start,
+                    price_p_per_kwh,
+                })
+                .collect(),
+            None => self.source.fetch(
+                &self.cfg.export_product,
+                &self.cfg.export_tariff,
+                start,
+                end,
+            )?,
+        };
         slots.sort_by_key(|slot| slot.start);
         slots.dedup_by_key(|slot| slot.start);
         slots.retain(|slot| start <= slot.start && slot.start < end);
@@ -126,3 +176,7 @@ impl OctopusExports {
         Ok(slots)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/export.rs"]
+mod tests;
