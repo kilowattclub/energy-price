@@ -14,11 +14,11 @@ pub struct AxleEvent {
     pub direction: AxleDirection,
 }
 
-/// Expected external dispatch and reward used only by the planner.
+/// A dispatch event and its expected reward, used only by the planner, which
+/// prices the event like any other export (or import) with the reward on top.
 /// The Home Assistant API supplies the window/direction, not power or reward.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AxleForecast {
     pub event: AxleEvent,
     pub reward_p_per_kwh: f64,
-    pub self_dispatch: bool,
 }
