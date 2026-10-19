@@ -47,12 +47,12 @@ fn err<T>(message: impl Into<String>) -> Result<T, String> {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AxleConfig {
-    /// Enable only after selecting Self-Dispatch Mode in the Axle account.
-    pub self_dispatch: bool,
     /// Expected reward, additional to the export tariff; not supplied by the API.
     pub export_reward_p_per_kwh: f64,
     /// Expected reward per net imported kWh (planning and measured estimates); zero unless explicitly configured.
     pub import_reward_p_per_kwh: f64,
+    /// Requires Self-Dispatch Mode in the Axle account: the member's own
+    /// controller exports through events; Axle only announces and pays them.
     pub enabled: bool,
     pub api_url: String,
     pub api_key: String,
@@ -61,7 +61,6 @@ pub struct AxleConfig {
 impl Default for AxleConfig {
     fn default() -> Self {
         Self {
-            self_dispatch: false,
             export_reward_p_per_kwh: 100.0,
             import_reward_p_per_kwh: 0.0,
             enabled: false,

@@ -34,7 +34,8 @@ impl ProviderConfig {
         event: Option<&EventInfo>,
     ) -> serde_json::Map<String, serde_json::Value> {
         serde_json::json!({
-            "axle_self_dispatch": self.axle.enabled && self.axle.self_dispatch,
+            // Legacy dashboard flag: an enabled provider always self-dispatches.
+            "axle_self_dispatch": self.axle.enabled,
             "axle_event": event.map(|e| serde_json::json!({"start":e.start, "end":e.end, "direction":e.direction})),
             "axle_rewards": rewards::snapshot(&directory.join("axle-rewards.json"), now),
         }).as_object().expect("object").clone()
@@ -86,24 +87,19 @@ mod tests {
             .unwrap();
     }
     #[test]
-    fn legacy_snapshot_flags_require_enabled_self_dispatch() {
+    fn legacy_snapshot_flag_follows_the_enabled_provider() {
         let now = Utc.with_ymd_and_hms(2026, 9, 10, 22, 0, 0).unwrap();
         let directory =
             std::env::temp_dir().join(format!("provider-snapshot-{}", std::process::id()));
-        for (enabled, self_dispatch, expected) in [
-            (false, true, false),
-            (true, false, false),
-            (true, true, true),
-        ] {
+        for enabled in [false, true] {
             let cfg = ProviderConfig {
                 axle: AxleConfig {
                     enabled,
-                    self_dispatch,
                     ..Default::default()
                 },
             };
             let fields = cfg.snapshot_fields(&directory, now, None);
-            assert_eq!(fields["axle_self_dispatch"], expected);
+            assert_eq!(fields["axle_self_dispatch"], enabled);
             assert!(fields["axle_event"].is_null());
             assert_eq!(fields["axle_rewards"], serde_json::json!([]));
         }
